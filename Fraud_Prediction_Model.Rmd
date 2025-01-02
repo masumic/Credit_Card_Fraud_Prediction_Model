@@ -1,0 +1,272 @@
+---
+title: "Fruad_Prediction_Model"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+FraudTrain <- read.csv("C:/Users/masum/Downloads/fraud test.csv/fraud test.csv")
+summary(FraudTrain)
+```
+
+```{r}
+#First, we decided to start by checking for any missing values in each variables
+any(is.na(FraudTrain))
+colSums(is.na(FraudTrain))
+```
+
+
+```{r}
+#Next, we constructed a gini index graph to understand which variables were the most influenctial
+library(caret)
+library(ranger)
+
+formula <- is_fraud ~ .
+model <- ranger(formula, data = FraudTrain, importance = "impurity")
+
+var_importance <- importance(model)
+variable_names <- rownames(var_importance)
+
+variable_names_ordered <- variable_names[order(var_importance, decreasing = FALSE)]
+
+# reordered the mean decrease in Gini values so that the values with the highest mean decrease in gini are on top
+var_importance_ordered <- var_importance[order(var_importance, decreasing = FALSE)]
+
+dotchart(var_importance_ordered, 
+         main = "Mean Decrease Gini Plot", 
+         xlab = "Mean Decrease in Gini", 
+         ylab = "Variable", 
+         labels = variable_names_ordered)
+```
+```{r}
+#Next we fit a random forest model to the data to verify which the best predictors of is_fraud
+#We had to create a subset of 7500 random entries because the original dataset was to large to processes
+n <- nrow(FraudTrain)
+set.seed(1111)
+random_indicies <- sample(1:n, 7500, replace=FALSE)
+subset <-FraudTrain[random_indicies, ]
+
+library(randomForest)
+rf_model <- randomForest(is_fraud ~ ., data = subset)
+importance <- importance(rf_model)
+varImpPlot(rf_model)
+```
+
+
+```{r}
+# Next, we split the variables into three groups (Transaction variables, demographic variables, and geospatial variables) and analyzed each variable
+
+#Transaction Analysis Group
+transaction_data <- FraudTrain[, c("amt", "category", "merchant", "trans_date_trans_time", "is_fraud")]
+
+#finding outliers in variable amt(dollar amount of a transaction)
+Q1 <- quantile(transaction_data$amt, probs = 0.25)
+Q3 <- quantile(transaction_data$amt, probs = 0.75)
+IQR <- Q3 - Q1
+
+upper_bound <- Q3 + 1.5 * IQR
+lower_bound <- Q1 - 1.5 * IQR
+
+outliers <- transaction_data$amt[transaction_data$amt > upper_bound | transaction_data$amt < lower_bound]
+length(outliers)
+
+#turns out that all 27778 outliers above the upper bound so we decided to clean this subset to better visualize the relationship between amt and fraudulent charges. Also 27778 instances seems like a lot but it retrospect it is only 0.049 percent of our dataset.
+transaction_data_clean <- transaction_data[transaction_data$amt <= 193.08, ]
+
+#Here we decided to do a box plot for amt since its numeric vs categorical
+boxplot(amt ~ is_fraud, data = transaction_data_clean,
+        xlab = "Fraud",
+        ylab = "Transaction Amount",
+        main = "Box Plot of Transaction Amount by Fraud")
+
+# Using tapply function to calculate medians of both fraud and non-fraud charges
+medians <- tapply(transaction_data_clean$amt, transaction_data_clean$is_fraud, median)
+text(x = c(1, 2), y = medians, labels = round(medians, 2), pos = 3, col = "blue")
+
+
+#Next, we decided to use feature engineering to extract the transaction timestamp and represent it as a numerical value so that we could further analyze it
+
+transaction_data$trans_datetime <- as.POSIXct(transaction_data$trans_date_trans_time, format = "%d/%m/%Y %H:%M")
+
+transaction_data$trans_hour <- as.numeric(format(transaction_data$trans_datetime, "%H"))
+transaction_data$trans_minute <- as.numeric(format(transaction_data$trans_datetime, "%M"))
+transaction_data$total_minutes <- transaction_data$trans_hour * 60 + transaction_data$trans_minute
+
+boxplot(total_minutes ~ is_fraud, data = transaction_data,
+        xlab = "Fraud",
+        ylab = "Transaction Time",
+        main = "Box Plot of Transaction Time by Fraud")
+
+#From this boxplot we can see that the time of the transaction is a very good predictor 
+
+# Next we analyzed the category variable by created a pie chart and calculating the mean of the proportion of fraud of each category and determined which category of purchases have above average fraud
+transaction_data$category <- as.factor(transaction_data$category)
+pie(table(transaction_data$category))
+
+fraud_proportion <- aggregate(is_fraud ~ category, data = transaction_data, FUN = function(x) mean(x == 1))
+overall_mean <- mean(fraud_proportion$is_fraud)
+above_mean_categories <- fraud_proportion[fraud_proportion$is_fraud > overall_mean, ]
+
+print(above_mean_categories)
+
+#repeat this for the merchant variable
+transaction_data_clean$merchant <- as.factor(transaction_data_clean$merchant)
+fraud_proportion2 <- aggregate(is_fraud ~ merchant, data = transaction_data_clean, FUN = function(x) mean(x == 1))
+overall_mean2 <- mean(fraud_proportion2$is_fraud)
+above_mean_merchants <- fraud_proportion2[fraud_proportion2$is_fraud > overall_mean2, ]
+
+print(above_mean_merchants)
+```
+```{r}
+#Demographic Analysis Group
+demographic_data <- FraudTrain[, c("gender", "dob", "job", "is_fraud")]
+
+#For the age variable, we decided to use feature engineering to transform date of birth(dob) to age so that we could perform numerical analysis
+demographic_data$dob <- as.Date(demographic_data$dob, format = "%d/%m/%Y")
+demographic_data$year <- format(demographic_data$dob, "%Y")
+demographic_data$age <- 2024 - as.numeric(demographic_data$year)
+demographic_data$year <- NULL
+head(demographic_data)
+
+boxplot(age ~ is_fraud, data = demographic_data,
+        xlab = "Fraud",
+        ylab = "Cardholder Age",
+        main = "Box Plot of Cardholder Age by Fraud")
+
+medians <- tapply(demographic_data$age, demographic_data$is_fraud, median)
+text(x = c(1, 2), y = medians, labels = round(medians, 2), pos = 3, col = "blue")
+# By using tapply function to calculate medians, we realized that age was not a substantial factor for predicting fraud and non-fraud charges
+
+
+# Created contingency table for the gender variable
+contingency_table3 <- xtabs(~ gender + is_fraud, data = demographic_data)
+print(contingency_table3)
+#table shows that proportion of fraud to non-fraud charges are the same(0.0039) for males and females
+
+#Next I calculated the mean of the proportion of fraud of each job and determined which job of purchases have above average fraud
+demographic_data$job <- as.factor(demographic_data$job)
+fraud_prop <- aggregate(is_fraud ~ job, data = demographic_data, FUN = function(x) mean(x == 1))
+mean <- mean(fraud_prop$is_fraud)
+above_mean_jobs <- fraud_prop[fraud_prop$is_fraud > mean, ]
+
+# Print categories above the mean
+print(above_mean_jobs)
+```
+
+```{r}
+#Geospatial Analysis Group
+geospatial_data <- FraudTrain[, c("street", "city", "state", "zip", "merch_lat", "merch_long", "is_fraud")]
+
+#We wanted to see which states had above average fraud charges so we found the proportion of fraud to non-fraud charges for each state and compares it to the mean
+
+geospatial_data$state <- as.factor(geospatial_data$state)
+fraud_prop2 <- aggregate(is_fraud ~ state, data = geospatial_data, FUN = function(x) mean(x == 1))
+mean2 <- mean(fraud_prop2$is_fraud)
+above_mean_states <- fraud_prop2[fraud_prop2$is_fraud > mean, ]
+print(above_mean_states)
+
+#Next, we wanted to narrow down on places with high fraud so took the states with above average fraud and made a cities subset 
+
+cities_subset <- subset(geospatial_data, state %in% c("AK", "CT"))
+contingency_table_cities <- table(cities_subset$city, cities_subset$is_fraud)
+print(contingency_table_cities)
+
+fraud_prop3 <- aggregate(is_fraud ~ city, data = cities_subset, FUN = function(x) mean(x == 1))
+mean2 <- mean(fraud_prop3$is_fraud)
+above_mean_cities <- fraud_prop3[fraud_prop3$is_fraud > mean, ]
+print(above_mean_cities)
+
+
+#Here, we did boxplots for numeric variables
+#We choose the merchant's latitude and longitude instead of the cardholders because we could see they were better predictors from the gini index graph
+boxplot(geospatial_data$merch_lat, 
+        main = "Box Plot of Merchant Latitude",
+        ylab = "Latitude")
+
+boxplot(geospatial_data$merch_long, 
+        main = "Box Plot of Merchant Longitude",
+        ylab = "Longitude")
+
+```
+```{r}
+#Since there is a large class imbalances we decided to address it by creating a balanced dataset with an equal number of fraud and non-fraud cases. 
+
+one_data <- FraudTrain[FraudTrain$is_fraud == 1,]
+random_indices <- sample(1:nrow(one_data), 2145, replace = FALSE)
+one_subset_data <- one_data[random_indices, ]
+
+zero_data <- FraudTrain[FraudTrain$is_fraud == 0,]
+random_indices <- sample(1:nrow(zero_data), 2145, replace = FALSE)
+zero_subset_data <- zero_data[random_indices, ]
+
+final_data <- rbind(one_subset_data, zero_subset_data)
+head(final_data)
+```
+```{r}
+#Since we observed that transaction time is a good predictor through our exploratory data analysis earlier, we decided to include that in our model
+
+final_data$trans_datetime <- as.POSIXct(final_data$trans_date_trans_time, format = "%d/%m/%Y %H:%M")
+
+final_data$trans_hour <- as.numeric(format(final_data$trans_datetime, "%H"))
+final_data$trans_minute <- as.numeric(format(final_data$trans_datetime, "%M"))
+final_data$total_minutes <- final_data$trans_hour * 60 + final_data$trans_minute
+head(final_data)
+```
+
+
+```{r}
+#Here we split the data into 70/30 for training and testing
+library(tidymodels) 
+set.seed(1111)
+
+esplit <- initial_split(final_data, prop = 0.70)
+train <- training(esplit)
+val <- testing(esplit)
+```
+
+```{r}
+library(rpart)
+library(rpart.plot)
+library(caret)
+
+#Here we created rpart model using top predictors
+formula <- as.factor(is_fraud) ~ amt + category + total_minutes
+
+rpart_train <- rpart(formula, data = train, method = "class", control = rpart.control(cp = 0.0001))
+plotcp(rpart_train)
+printcp(rpart_train)
+rpart.plot(rpart_train,compress=TRUE)
+
+#constructing confusion matrices
+predictions_train <- predict(rpart_train, newdata = train, type = "class")
+conf_matrix_train <- table(predictions_train, train$is_fraud)
+print(conf_matrix_train)
+
+predictions_test <- predict(rpart_train, newdata = val, type = "class")
+conf_matrix_test <- table(predictions_test, val$is_fraud)
+print(conf_matrix_test)
+
+#checking accuracy
+accuracy <-mean(val$is_fraud==predictions_test)*100
+accuracy
+```
+
+```{r}
+#Naïve Bayes Classification
+library(e1071)
+nb_model <- naiveBayes(is_fraud ~ ., data = train)
+
+prediction_train <- predict(nb_model, newdata = train)
+nb_conf_matrix_train <- table(prediction_train, train$is_fraud)
+print(nb_conf_matrix_train)
+
+prediction_test2 <- predict(nb_model, newdata = val)
+nb_conf_matrix_test <- table(prediction_test2, val$is_fraud)
+print(nb_conf_matrix_test)
+
+accuracy2 <-mean(val$is_fraud==prediction_test2)*100
+accuracy2
+
+#Naïve Bayes classification model accuracy is approx 10% lower than rpart model accuracy
+```
